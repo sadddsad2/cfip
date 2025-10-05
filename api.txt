@@ -15,20 +15,23 @@ https://raw.githubusercontent.com/ZhiXuanWang/cf-speed-dns/refs/heads/main/ipTop
 https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/addressesapi.txt
 
 # 第三方 API 服务
-https://ip.164746.xyz/ipTop10.html
+
 https://vps789.com/public/sum/cfIpApi
 https://addressesapi.090227.xyz/CloudFlareYes
 https://addressesapi.090227.xyz/ip.164746.xyz
 https://ipdb.api.030101.xyz/?type=bestproxy&country=true
 https://vps789.com/openApi/cfIpTop20
-https://api.uouin.com/cloudflare.html
+
 # 盒子库
 https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt
 
 # ========== HTML 页面源（自动提取IP）==========
-# WeTest.Vip 优选地址页面
+
 https://www.wetest.vip/page/cloudflare/address_v4.html
 https://www.wetest.vip/page/cloudflare/colo.html
+https://stock.hostmonit.com/CloudFlareYes
+https://api.uouin.com/cloudflare.html
+https://ip.164746.xyz/ipTop10.html
 
 # 需要密钥的 API（已注释，如需使用请替换密钥后取消注释）
 # https://www.wetest.vip/api/cf2dns/get_cloudflare_ip&type=v4&key=YOUR_KEY_HERE
