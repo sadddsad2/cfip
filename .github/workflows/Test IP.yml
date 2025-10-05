@@ -1,0 +1,463 @@
+name: Test IP Connectivity and Create Release
+
+on:
+  schedule:
+    - cron: '0 19 * * *'  # 每天北京时间凌晨3点运行 (UTC 19:00 = 北京时间 03:00)
+  workflow_dispatch:  # 允许手动触发
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/ip-test.yml'
+      - 'api.txt'
+
+# 添加必要的权限
+permissions:
+  contents: write  # 允许创建 Release 和上传文件
+  actions: read
+
+jobs:
+  test-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install requests aiohttp asyncio
+
+    - name: Verify api.txt exists
+      run: |
+        if [ ! -f api.txt ]; then
+          echo "❌ api.txt 文件不存在，正在创建示例文件..."
+          cat > api.txt << 'APIEOF'
+        # API 列表配置文件
+        # 每行一个 API 地址，# 开头的行为注释
+        # 
+        # CloudFlare IP 优选 API
+        https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/bestproxy.txt
+        https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/bestcf.txt
+        https://ip.164746.xyz/ipTop10.html
+        https://raw.githubusercontent.com/ZhiXuanWang/cf-speed-dns/refs/heads/main/ipTop10.html
+        https://vps789.com/public/sum/cfIpApi
+        # https://www.wetest.vip/api/cf2dns/get_cloudflare_ip&type=v4&key=o1zrmHAF
+        https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/addressesapi.txt
+        https://addressesapi.090227.xyz/CloudFlareYes
+        https://addressesapi.090227.xyz/ip.164746.xyz
+        APIEOF
+          echo "✅ 已创建示例 api.txt 文件"
+        fi
+        echo "📋 API 列表内容："
+        cat api.txt
+
+    - name: Create test script
+      run: |
+        cat > test_ip.py << 'EOF'
+        import asyncio
+        import aiohttp
+        import json
+        import re
+        import socket
+        from datetime import datetime
+        from typing import List, Dict, Optional, Tuple
+        import time
+        import os
+
+        # 国家代码映射
+        COUNTRY_MAPPING = {
+            'CN': '中国', 'HK': '香港', 'TW': '台湾', 'JP': '日本', 'KR': '韩国',
+            'SG': '新加坡', 'MY': '马来西亚', 'TH': '泰国', 'VN': '越南', 'ID': '印尼',
+            'IN': '印度', 'PH': '菲律宾', 'US': '美国', 'CA': '加拿大', 'MX': '墨西哥',
+            'DE': '德国', 'GB': '英国', 'FR': '法国', 'IT': '意大利', 'ES': '西班牙',
+            'PT': '葡萄牙', 'NL': '荷兰', 'BE': '比利时', 'SE': '瑞典', 'NO': '挪威',
+            'AU': '澳大利亚', 'NZ': '新西兰', 'BR': '巴西', 'AR': '阿根廷', 'RU': '俄罗斯',
+            'CH': '瑞士', 'AT': '奥地利', 'DK': '丹麦', 'FI': '芬兰', 'IE': '爱尔兰',
+            'PL': '波兰', 'CZ': '捷克', 'TR': '土耳其', 'AE': '阿联酋', 'IL': '以色列',
+            'ZA': '南非', 'EG': '埃及', 'SA': '沙特', 'UA': '乌克兰', 'GR': '希腊'
+        }
+
+        def load_api_list(filename: str = 'api.txt') -> List[str]:
+            """从 api.txt 加载 API 列表"""
+            api_urls = []
+            
+            if not os.path.exists(filename):
+                print(f"❌ {filename} 文件不存在")
+                return api_urls
+            
+            with open(filename, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 忽略空行和 # 开头的注释行
+                    if line and not line.startswith('#'):
+                        api_urls.append(line)
+            
+            print(f"✅ 从 {filename} 加载了 {len(api_urls)} 个 API")
+            return api_urls
+
+        def is_valid_ip(ip: str) -> bool:
+            """验证IP地址格式"""
+            parts = ip.split('.')
+            if len(parts) != 4:
+                return False
+            for part in parts:
+                try:
+                    num = int(part)
+                    if num < 0 or num > 255:
+                        return False
+                    if len(part) > 1 and part[0] == '0':
+                        return False
+                except ValueError:
+                    return False
+            return True
+
+        def is_valid_port(port: str) -> bool:
+            """验证端口号格式"""
+            try:
+                num = int(port)
+                return 0 < num <= 65535
+            except ValueError:
+                return False
+
+        def parse_ip_line(line: str) -> Optional[Dict]:
+            """解析IP行，支持多种格式"""
+            line = line.strip()
+            
+            # 跳过无效行
+            if not line or line.startswith(('#', '//', '<!--', 'http')):
+                return None
+            
+            # 模式1: IP:Port#Country
+            match = re.match(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)#(.+)$', line)
+            if match:
+                ip, port, country = match.groups()
+                if is_valid_ip(ip) and is_valid_port(port):
+                    return {'ip': ip, 'port': port, 'country': country.strip()}
+            
+            # 模式2: IP#Country
+            match = re.match(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})#(.+)$', line)
+            if match:
+                ip, country = match.groups()
+                if is_valid_ip(ip):
+                    return {'ip': ip, 'port': '443', 'country': country.strip()}
+            
+            # 模式3: IP:Port
+            match = re.match(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)', line)
+            if match:
+                ip, port = match.groups()
+                if is_valid_ip(ip) and is_valid_port(port):
+                    return {'ip': ip, 'port': port, 'country': None}
+            
+            # 模式4: 单独IP
+            match = re.match(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$', line)
+            if match:
+                ip = match.group(1)
+                if is_valid_ip(ip):
+                    return {'ip': ip, 'port': '443', 'country': None}
+            
+            return None
+
+        async def fetch_url(session: aiohttp.ClientSession, url: str) -> str:
+            """异步获取URL内容"""
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        return await response.text()
+                    else:
+                        print(f"⚠️  {url} 返回状态码: {response.status}")
+            except asyncio.TimeoutError:
+                print(f"⏱️  {url} 请求超时")
+            except Exception as e:
+                print(f"❌ 获取 {url} 失败: {e}")
+            return ""
+
+        async def get_ip_country(session: aiohttp.ClientSession, ip: str) -> str:
+            """获取IP归属地"""
+            try:
+                async with session.get(f'https://ipinfo.io/{ip}/json', 
+                                      timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        country_code = data.get('country', 'Unknown')
+                        return COUNTRY_MAPPING.get(country_code, country_code)
+            except Exception:
+                pass
+            return 'Unknown'
+
+        def test_tcp_connectivity(ip: str, port: int, timeout: float = 3.0) -> bool:
+            """测试TCP连接"""
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                result = sock.connect_ex((ip, port))
+                sock.close()
+                return result == 0
+            except Exception:
+                return False
+
+        async def test_ip_connectivity(ip_data: Dict, session: aiohttp.ClientSession) -> Optional[Dict]:
+            """测试单个IP的连通性"""
+            ip = ip_data['ip']
+            port = int(ip_data['port'])
+            
+            print(f"🔍 测试 {ip}:{port}...", end=' ')
+            
+            # 测试连通性
+            is_connected = test_tcp_connectivity(ip, port, timeout=5.0)
+            
+            if not is_connected:
+                print("❌ 无法连接")
+                return None
+            
+            print("✅ 连接成功", end=' ')
+            
+            # 获取国家信息
+            country = ip_data.get('country')
+            if not country or country == 'Unknown':
+                country = await get_ip_country(session, ip)
+                print(f"📍 {country}")
+            else:
+                print(f"📍 {country}")
+            
+            return {
+                'ip': ip,
+                'port': port,
+                'country': country
+            }
+
+        async def main():
+            print("=" * 60)
+            print("🚀 开始测试 IP 连通性")
+            print("=" * 60)
+            
+            # 从 api.txt 加载 API 列表
+            api_urls = load_api_list('api.txt')
+            
+            if not api_urls:
+                print("❌ 没有可用的 API，请检查 api.txt 文件")
+                return
+            
+            all_ips = []
+            seen_ips = set()
+            
+            # 收集所有IP
+            async with aiohttp.ClientSession() as session:
+                print(f"\n📥 正在从 {len(api_urls)} 个 API 获取 IP 列表...")
+                print("-" * 60)
+                
+                for idx, api_url in enumerate(api_urls, 1):
+                    print(f"[{idx}/{len(api_urls)}] {api_url}")
+                    content = await fetch_url(session, api_url)
+                    
+                    if not content:
+                        continue
+                    
+                    lines = content.split('\n')
+                    count_before = len(all_ips)
+                    
+                    for line in lines:
+                        ip_data = parse_ip_line(line)
+                        if ip_data and ip_data['ip'] not in seen_ips:
+                            seen_ips.add(ip_data['ip'])
+                            all_ips.append(ip_data)
+                    
+                    new_ips = len(all_ips) - count_before
+                    if new_ips > 0:
+                        print(f"  ✅ 新增 {new_ips} 个 IP")
+                    else:
+                        print(f"  ⚠️  未获取到新 IP")
+                
+                print("-" * 60)
+                print(f"✅ 共收集到 {len(all_ips)} 个唯一 IP")
+                
+                if len(all_ips) == 0:
+                    print("❌ 没有收集到任何 IP，请检查 API 是否正常")
+                    with open('ip.txt', 'w', encoding='utf-8') as f:
+                        f.write(f"# 测试时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write("# 未收集到任何 IP 数据\n")
+                    return
+                
+                # 测试连通性
+                print("\n🔄 开始测试连通性...")
+                print("-" * 60)
+                
+                valid_ips = []
+                
+                # 分批处理，避免并发过高
+                batch_size = 20
+                for i in range(0, len(all_ips), batch_size):
+                    batch = all_ips[i:i+batch_size]
+                    batch_tasks = [test_ip_connectivity(ip_data, session) for ip_data in batch]
+                    results = await asyncio.gather(*batch_tasks)
+                    valid_ips.extend([r for r in results if r is not None])
+                    
+                    # 进度显示
+                    progress = min(i + batch_size, len(all_ips))
+                    print(f"\n📊 进度: {progress}/{len(all_ips)} ({progress*100//len(all_ips)}%) | 已找到可用 IP: {len(valid_ips)}")
+                    print("-" * 60)
+                    
+                    # 短暂延迟，避免请求过快
+                    await asyncio.sleep(0.5)
+            
+            print("\n" + "=" * 60)
+            print(f"✅ 测试完成！")
+            print(f"📊 总测试数: {len(all_ips)}")
+            print(f"✅ 可连接数: {len(valid_ips)}")
+            print(f"📈 成功率: {len(valid_ips)*100//len(all_ips) if all_ips else 0}%")
+            print("=" * 60)
+            
+            # 写入文件
+            with open('ip.txt', 'w', encoding='utf-8') as f:
+                # 写入头部信息
+                f.write(f"# IP 连通性测试结果\n")
+                f.write(f"# 测试时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# 总测试数: {len(all_ips)}\n")
+                f.write(f"# 可连接数: {len(valid_ips)}\n")
+                f.write(f"# 成功率: {len(valid_ips)*100//len(all_ips) if all_ips else 0}%\n")
+                f.write(f"# 格式: IP:端口#国家地区\n")
+                f.write("#" + "=" * 58 + "\n\n")
+                
+                if valid_ips:
+                    # 按国家分组
+                    by_country = {}
+                    for ip_info in valid_ips:
+                        country = ip_info['country']
+                        if country not in by_country:
+                            by_country[country] = []
+                        by_country[country].append(ip_info)
+                    
+                    # 写入分组后的IP
+                    for country in sorted(by_country.keys()):
+                        f.write(f"# {country} ({len(by_country[country])}个)\n")
+                        for ip_info in by_country[country]:
+                            f.write(f"{ip_info['ip']}:{ip_info['port']}#{ip_info['country']}\n")
+                        f.write("\n")
+                    
+                    print(f"\n💾 结果已保存到 ip.txt")
+                    
+                    # 输出统计信息
+                    print("\n📊 国家/地区分布:")
+                    for country, ips in sorted(by_country.items(), key=lambda x: len(x[1]), reverse=True):
+                        print(f"  {country}: {len(ips)} 个")
+                else:
+                    f.write("# 未找到可连接的 IP\n")
+                    print("\n⚠️  没有找到可连接的 IP")
+
+        if __name__ == '__main__':
+            asyncio.run(main())
+        EOF
+
+    - name: Run IP connectivity test
+      run: |
+        python test_ip.py
+
+    - name: Check if ip.txt exists and has valid data
+      id: check_file
+      run: |
+        if [ -f ip.txt ]; then
+          # 检查文件是否有实际的IP数据（排除注释行）
+          valid_lines=$(grep -v '^#' ip.txt | grep -E '^\s*[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l)
+          
+          if [ "$valid_lines" -gt 0 ]; then
+            echo "file_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ ip.txt 文件已生成，包含 $valid_lines 个有效 IP"
+            echo "ip_count=$valid_lines" >> $GITHUB_OUTPUT
+          else
+            echo "file_exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️  ip.txt 文件已生成，但没有有效的 IP 数据"
+            echo "ip_count=0" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "📄 文件内容预览:"
+          head -n 30 ip.txt
+        else
+          echo "file_exists=false" >> $GITHUB_OUTPUT
+          echo "ip_count=0" >> $GITHUB_OUTPUT
+          echo "❌ ip.txt 文件未生成"
+        fi
+
+    - name: Create Release
+      if: steps.check_file.outputs.file_exists == 'true'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ github.run_number }}-${{ github.run_id }}
+        name: IP List ${{ github.run_number }} - ${{ steps.check_file.outputs.ip_count }} IPs
+        body: |
+          ## 📋 IP 连通性测试结果
+          
+          **测试时间:** `${{ github.event.repository.updated_at }}`  
+          **运行编号:** #${{ github.run_number }}  
+          **可用 IP 数量:** ${{ steps.check_file.outputs.ip_count }} 个
+          
+          ### 📊 测试说明
+          - ✅ 所有 IP 均已测试与中国大陆的连通性
+          - 📍 包含 IP 归属地信息（国家/地区）
+          - 📝 格式: `IP:端口#国家地区`
+          - 🔄 每天北京时间凌晨 3 点自动更新
+          
+          ### 📥 使用方法
+          1. 下载 `ip.txt` 文件
+          2. 按照格式使用其中的 IP 地址
+          3. 每个 IP 都已验证可连接
+          
+          ### ⚙️ API 来源
+          IP 数据来自 `api.txt` 文件中配置的 API 接口
+          
+          ---
+          *此 Release 由 GitHub Actions 自动生成 🤖*
+        files: |
+          ip.txt
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Keep only latest 5 releases
+      if: steps.check_file.outputs.file_exists == 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const releases = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100
+          });
+          
+          const sortedReleases = releases.data.sort((a, b) => 
+            new Date(b.created_at) - new Date(a.created_at)
+          );
+          
+          console.log(`Found ${sortedReleases.length} releases`);
+          
+          if (sortedReleases.length > 5) {
+            for (let i = 5; i < sortedReleases.length; i++) {
+              console.log(`Deleting release: ${sortedReleases[i].name} (${sortedReleases[i].tag_name})`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: sortedReleases[i].id
+              });
+              
+              // 同时删除对应的 tag
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${sortedReleases[i].tag_name}`
+                });
+                console.log(`Deleted tag: ${sortedReleases[i].tag_name}`);
+              } catch (error) {
+                console.log(`Could not delete tag: ${sortedReleases[i].tag_name}`);
+              }
+            }
+            console.log(`✅ Cleaned up ${sortedReleases.length - 5} old releases`);
+          } else {
+            console.log('✅ No cleanup needed');
+          }
