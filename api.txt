@@ -1,6 +1,11 @@
 # API 列表配置文件
 # 每行一个 API 地址，# 开头的行为注释
 # 空行会被自动忽略
+# 
+# 支持的格式：
+# 1. 文本API：返回纯文本IP列表
+# 2. HTML页面：从网页中自动提取IP（.html/.htm/.php/.asp等）
+# 3. 没有端口的IP默认使用443端口
 
 # ========== CloudFlare 优选 IP API ==========
 # GitHub 仓库源
@@ -14,7 +19,13 @@ https://ip.164746.xyz/ipTop10.html
 https://vps789.com/public/sum/cfIpApi
 https://addressesapi.090227.xyz/CloudFlareYes
 https://addressesapi.090227.xyz/ip.164746.xyz
+# 盒子库
 https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt
+
+# ========== HTML 页面源（自动提取IP）==========
+# WeTest.Vip 优选地址页面
+https://www.wetest.vip/page/cloudflare/address_v4.html
+https://www.wetest.vip/page/cloudflare/colo.html
 
 # 需要密钥的 API（已注释，如需使用请替换密钥后取消注释）
 # https://www.wetest.vip/api/cf2dns/get_cloudflare_ip&type=v4&key=YOUR_KEY_HERE
@@ -22,4 +33,4 @@ https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbes
 # ========== 其他可选 API ==========
 # 如有其他 IP 来源，可以添加在下方
 # https://example.com/api/ips
-# https://another-api.com/cloudflare-ips
+# https://another-api.com/cloudflare-ips.html
