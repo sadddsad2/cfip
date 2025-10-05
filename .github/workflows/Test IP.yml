@@ -185,57 +185,117 @@ jobs:
                 print(f"❌ 获取 {url} 失败: {e}")
             return ""
 
-        async def get_ip_location(session: aiohttp.ClientSession, ip: str) -> str:
-            """获取IP详细地理位置（国家+地区/城市）"""
+        def normalize_location(location: str) -> str:
+            """标准化地理位置格式"""
+            if not location or location == 'Unknown':
+                return 'Unknown'
+            
+            # 移除多余空格和特殊字符
+            location = location.strip()
+            location = re.sub(r'\s+', ' ', location)
+            
+            # 如果没有分隔符，尝试添加
+            if '-' not in location and ' ' in location:
+                parts = location.split(' ', 1)
+                location = '-'.join(parts)
+            
+            return location
+
+        async def get_ip_location(session: aiohttp.ClientSession, ip: str, retry: int = 2) -> str:
+            """获取IP详细地理位置（国家+地区/城市），带重试机制"""
+            
+            # 方法1: 使用 ip-api.com (中文支持更好)
+            for attempt in range(retry):
+                try:
+                    async with session.get(f'http://ip-api.com/json/{ip}?lang=zh-CN&fields=status,country,regionName,city,countryCode', 
+                                          timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if data.get('status') == 'success':
+                                country = data.get('country', '')
+                                region_name = data.get('regionName', '')
+                                city = data.get('city', '')
+                                country_code = data.get('countryCode', '')
+                                
+                                # 如果是英文国家名，尝试转换为中文
+                                if country_code and country_code in COUNTRY_MAPPING:
+                                    country = COUNTRY_MAPPING[country_code]
+                                
+                                location_parts = []
+                                if country:
+                                    location_parts.append(country)
+                                
+                                # 优先使用城市
+                                if city and city.strip():
+                                    location_parts.append(city.strip())
+                                elif region_name and region_name.strip():
+                                    location_parts.append(region_name.strip())
+                                
+                                if location_parts:
+                                    location = '-'.join(location_parts)
+                                    return normalize_location(location)
+                except Exception as e:
+                    if attempt == retry - 1:
+                        print(f"    ⚠️  ip-api.com 查询失败: {e}")
+                    await asyncio.sleep(1)
+            
+            # 方法2: 使用 ipinfo.io 作为备用
+            for attempt in range(retry):
+                try:
+                    async with session.get(f'https://ipinfo.io/{ip}/json', 
+                                          timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            country_code = data.get('country', '')
+                            city = data.get('city', '')
+                            region = data.get('region', '')
+                            
+                            if country_code:
+                                country_name = COUNTRY_MAPPING.get(country_code, country_code)
+                                
+                                location_parts = [country_name]
+                                
+                                # 优先使用城市，其次使用地区
+                                if city and city.strip():
+                                    location_parts.append(city.strip())
+                                elif region and region.strip():
+                                    location_parts.append(region.strip())
+                                
+                                location = '-'.join(location_parts)
+                                return normalize_location(location)
+                except Exception as e:
+                    if attempt == retry - 1:
+                        print(f"    ⚠️  ipinfo.io 查询失败: {e}")
+                    await asyncio.sleep(1)
+            
+            # 方法3: 使用 ipapi.co 作为最后备用
             try:
-                # 方法1: 使用 ipinfo.io (包含城市信息)
-                async with session.get(f'https://ipinfo.io/{ip}/json', 
+                async with session.get(f'https://ipapi.co/{ip}/json/', 
                                       timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
-                        country_code = data.get('country', '')
+                        country = data.get('country_name', '')
                         city = data.get('city', '')
                         region = data.get('region', '')
+                        country_code = data.get('country_code', '')
                         
-                        if country_code:
-                            country_name = COUNTRY_MAPPING.get(country_code, country_code)
-                            
-                            # 构建详细地理位置
-                            location_parts = [country_name]
-                            
-                            # 优先使用城市，其次使用地区
-                            if city:
-                                location_parts.append(city)
-                            elif region:
-                                location_parts.append(region)
-                            
-                            return '-'.join(location_parts)
+                        # 尝试转换为中文
+                        if country_code and country_code in COUNTRY_MAPPING:
+                            country = COUNTRY_MAPPING[country_code]
+                        
+                        location_parts = []
+                        if country:
+                            location_parts.append(country)
+                        if city and city.strip():
+                            location_parts.append(city.strip())
+                        elif region and region.strip():
+                            location_parts.append(region.strip())
+                        
+                        if location_parts:
+                            location = '-'.join(location_parts)
+                            return normalize_location(location)
             except Exception as e:
-                print(f"  ⚠️  ipinfo.io 查询失败: {e}")
-            
-            # 方法2: 使用备用 API (ip-api.com)
-            try:
-                async with session.get(f'http://ip-api.com/json/{ip}?lang=zh-CN', 
-                                      timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get('status') == 'success':
-                            country = data.get('country', '')
-                            region_name = data.get('regionName', '')
-                            city = data.get('city', '')
-                            
-                            location_parts = []
-                            if country:
-                                location_parts.append(country)
-                            if city:
-                                location_parts.append(city)
-                            elif region_name:
-                                location_parts.append(region_name)
-                            
-                            if location_parts:
-                                return '-'.join(location_parts)
-            except Exception as e:
-                print(f"  ⚠️  ip-api.com 查询失败: {e}")
+                print(f"    ⚠️  ipapi.co 查询失败: {e}")
             
             return 'Unknown'
 
@@ -305,19 +365,22 @@ jobs:
             ip = ip_data['ip']
             port = int(ip_data['port'])
             
-            print(f"\n🔍 测试 {ip}:{port}")
+            print(f"\n{'='*60}")
+            print(f"🔍 测试 IP: {ip}:{port}")
+            print(f"{'='*60}")
             
             # 先进行基础连通性测试
-            print(f"  ⏱️  基础连通性测试...", end=' ')
+            print(f"  [1/4] 基础连通性测试...", end=' ')
             is_connected = test_tcp_connectivity(ip, port, timeout=5.0)
             
             if not is_connected:
-                print("❌ 无法连接")
+                print("❌ 失败")
                 return None
             
-            print("✅ 连接成功")
+            print("✅ 成功")
             
             # 测试三大运营商的连通性
+            print(f"  [2/4] 三网连通性测试:")
             isp_results = test_isp_connectivity(ip, port)
             
             # 检查是否全部联通
@@ -325,24 +388,30 @@ jobs:
             
             if not all_connected:
                 failed_isps = [isp for isp, connected in isp_results.items() if not connected]
-                print(f"  ⚠️  部分运营商不通: {', '.join(failed_isps)} - 跳过此IP")
+                print(f"      ⚠️  部分运营商不通: {', '.join(failed_isps)}")
+                print(f"      ❌ 未通过三网测试，跳过")
                 return None
             
-            print(f"  🎉 三网全通！")
+            print(f"      ✅ 电信、联通、移动全部联通")
             
-            # 获取详细地理位置信息
-            print(f"  📍 查询地理位置...", end=' ')
-            location = ip_data.get('country')
-            if not location or location == 'Unknown':
-                location = await get_ip_location(session, ip)
-                print(location)
-            else:
-                # 如果原始数据只有国家代码，尝试获取详细位置
-                if location in COUNTRY_MAPPING.values() or len(location) == 2:
-                    detailed_location = await get_ip_location(session, ip)
-                    if detailed_location != 'Unknown' and '-' in detailed_location:
-                        location = detailed_location
-                print(location)
+            # 强制重新查询地理位置（忽略原有数据）
+            print(f"  [3/4] 查询地理位置信息...")
+            location = await get_ip_location(session, ip, retry=3)
+            
+            if location == 'Unknown':
+                print(f"      ⚠️  无法获取地理位置，跳过")
+                return None
+            
+            print(f"      📍 位置: {location}")
+            
+            # 验证格式
+            print(f"  [4/4] 验证数据格式...", end=' ')
+            if not location or location == 'Unknown' or '-' not in location:
+                print(f"❌ 格式异常")
+                return None
+            
+            print(f"✅ 通过")
+            print(f"  🎉 此IP通过所有测试！")
             
             return {
                 'ip': ip,
@@ -449,7 +518,7 @@ jobs:
                 f.write("#" + "=" * 58 + "\n\n")
                 
                 if valid_ips:
-                    # 按地理位置分组
+                    # 按地理位置分组并排序
                     by_location = {}
                     for ip_info in valid_ips:
                         location = ip_info['location']
@@ -457,19 +526,45 @@ jobs:
                             by_location[location] = []
                         by_location[location].append(ip_info)
                     
+                    # 按国家和城市排序
+                    sorted_locations = sorted(by_location.keys(), key=lambda x: (
+                        x.split('-')[0],  # 先按国家排序
+                        x.split('-')[1] if '-' in x and len(x.split('-')) > 1 else ''  # 再按城市排序
+                    ))
+                    
                     # 写入分组后的IP
-                    for location in sorted(by_location.keys()):
-                        f.write(f"# {location} ({len(by_location[location])}个)\n")
-                        for ip_info in by_location[location]:
-                            f.write(f"{ip_info['ip']}:{ip_info['port']}#{ip_info['location']}\n")
+                    for location in sorted_locations:
+                        ips = by_location[location]
+                        f.write(f"# {location} ({len(ips)}个)\n")
+                        
+                        # 对每个位置的IP按端口排序
+                        sorted_ips = sorted(ips, key=lambda x: (x['ip'], int(x['port'])))
+                        
+                        for ip_info in sorted_ips:
+                            # 统一格式: IP:端口#国家-城市
+                            line = f"{ip_info['ip']}:{ip_info['port']}#{ip_info['location']}"
+                            f.write(f"{line}\n")
                         f.write("\n")
                     
                     print(f"\n💾 结果已保存到 ip.txt")
                     
-                    # 输出统计信息
-                    print("\n📊 地理位置分布:")
-                    for location, ips in sorted(by_location.items(), key=lambda x: len(x[1]), reverse=True):
-                        print(f"  {location}: {len(ips)} 个")
+                    # 输出统计信息（按国家汇总）
+                    print("\n📊 地理位置分布统计:")
+                    country_stats = {}
+                    for location, ips in by_location.items():
+                        country = location.split('-')[0]
+                        if country not in country_stats:
+                            country_stats[country] = 0
+                        country_stats[country] += len(ips)
+                    
+                    # 按数量排序
+                    for country, count in sorted(country_stats.items(), key=lambda x: x[1], reverse=True):
+                        print(f"  🌍 {country}: {count} 个")
+                    
+                    # 详细城市分布
+                    print("\n📍 详细城市分布:")
+                    for location in sorted_locations[:20]:  # 只显示前20个
+                        print(f"  📌 {location}: {len(by_location[location])} 个")
                 else:
                     f.write("# 未找到三网全通的 IP\n")
                     print("\n⚠️  没有找到三网全通的 IP")
