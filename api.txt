@@ -19,6 +19,9 @@ https://ip.164746.xyz/ipTop10.html
 https://vps789.com/public/sum/cfIpApi
 https://addressesapi.090227.xyz/CloudFlareYes
 https://addressesapi.090227.xyz/ip.164746.xyz
+https://ipdb.api.030101.xyz/?type=bestproxy&country=true
+https://vps789.com/openApi/cfIpTop20
+https://api.uouin.com/cloudflare.html
 # 盒子库
 https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt
 
