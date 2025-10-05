@@ -31,7 +31,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install requests aiohttp asyncio dnspython
+        pip install requests aiohttp asyncio dnspython beautifulsoup4 lxml
 
     - name: Verify api.txt exists
       run: |
